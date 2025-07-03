@@ -330,16 +330,19 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq){
             } else if(err_angle < -M_PI) {
                 err_angle += 2 * M_PI;
             }
-//            if(State_Ts > 4 * startup_time){
-//                State_Ts = 0;
-//                State = 2;
-//            }
+            if(State_Ts > 3 * startup_time){
+                State_Ts = 0;
+                State = 2;
+            }
             break;
         }
         case 2:{
             
-            sine = sinf(smo.Theta_pll + 2.45f);
-            cosine = cosf(smo.Theta_pll + 2.45f);
+//            sine = sinf(smo.Theta_pll + 2.45f);
+//            cosine = cosf(smo.Theta_pll + 2.45f);
+
+            sine = sinf(smo.Theta_pll);
+            cosine = cosf(smo.Theta_pll);
             
             Clark(&Curr_foc, Curr_threephase.Ia, Curr_threephase.Ib);
             Park(&Curr_foc, sine, cosine);

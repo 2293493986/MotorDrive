@@ -44,12 +44,13 @@ void Time0_Init(int Freq, int Period){
     EDIS;   //开启写保护
 }
 
+float target_iq = 0.35f;
 interrupt void TIM0_IRQ(void)
 {
     EALLOW;
     ms_1000++;
 //    VF_OpenLoop_Control();
-    IF_OpenLoop_Control(1000, 5,0.35f);
+    IF_OpenLoop_Control(1000, 5,target_iq);
 //    IF_OpenLoop_Control(200, 5,0.1f);
     CpuTimer0Regs.TCR.bit.TIF = 1;//清除外设及中断标志位
     PieCtrlRegs.PIEACK.bit.ACK1 = 1;//清除PIE级中断应答

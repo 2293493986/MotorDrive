@@ -1,0 +1,12 @@
+.launches/
+.settings/
+.vscode/
+Debug/
+System/
+targetConfigs/
+
+.ccsproject
+.cproject
+.project
+F2806x_Headers_nonBIOS.cmd
+F28069.cmd
