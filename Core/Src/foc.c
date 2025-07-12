@@ -12,7 +12,10 @@ struct Vol  Vol_foc;
 
 struct PID_Controller PID_Iq;
 struct PID_Controller PID_Id;
+struct PID_Controller PID_Speed;
+
 struct filter filter_data = {0.0f, 0.0f}; // 滤波器数据结构体
+
 
 void PID_PreLoad(struct PID_Controller *pid, float *paremeters) {
     PID_Init(pid,
@@ -29,6 +32,7 @@ void PID_PreLoad(struct PID_Controller *pid, float *paremeters) {
 void PID_Load(){
     // filter_data.Id = 0.0f; // 初始化Id滤波器
     // filter_data.Iq = 0.0f; // 初始化Iq滤波器
+    PID_PreLoad(&PID_Speed, Speed_PID_parameters);
     PID_PreLoad(&PID_Iq, Iq_PID_paremeters);
     PID_PreLoad(&PID_Id, Id_PID_paremeters);
 }
@@ -272,16 +276,23 @@ float calculateRequiredIq(float target_speed, float startup_time) {
     return required_iq;
 }
 
+
+           
+float Target_speed = 1000.0f; // rpm
+float iq_cmd = 0;
+float Err_angle = 0.0f,Err_angle_encoder = 0;
+float encoder_offset11 = 0;
 /**
  * 开环IF控制函数
  * @param target_speed 目标速度
  * @param startup_time 启动时间
  */
-void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq){
+void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq,float angle_encoder){
     static unsigned char State = 0; // 状态机变量
     static float angle = 0.0f,sine = 0.0f,cosine = 0.0f,omega = 0.0f; // 初始化角度及角速度
     static float State_Ts = 0; // 状态机状态切换时间
     static float err_angle = 0.0f; // 角度误差
+    static float encoder_offset = 0;
     switch (State){
         case 0:{
             angle = 0.0f; // 初始化角度
@@ -295,8 +306,9 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq){
             Vol_foc.Uq = 0; // 交轴电压设为0V
             Ipark(&Vol_foc, sine, cosine); // 逆Park变换
             Svpwm(&Vol_foc, V_all); // 调用SVPWM函数生成PWM信号
-            if(State_Ts++ >= 2500){
+            if(State_Ts++ >= 5000){
                 State_Ts = 0; // 重置状态切换时间
+                encoder_offset = angle_encoder;
                 SMO_Init(&smo,SMO_paremeters[0],SMO_paremeters[1],SMO_paremeters[2]); // 初始化滑模观测器
                 State = 1; // 切换到下一个状态
             }
@@ -317,21 +329,33 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq){
             cosine = cosf(angle); // 计算余弦值
             Clark(&Curr_foc, Curr_threephase.Ia, Curr_threephase.Ib); // Clarke变换
             Park(&Curr_foc, sine, cosine); // Park变换 计算直轴和交轴电流
-            Vol_foc.Ud = PID_Calculate(&PID_Id, 0.0f, Curr_foc.Id); // 计算直轴电压
-            Vol_foc.Uq = PID_Calculate(&PID_Iq, tar_iq, Curr_foc.Iq); // 计算交轴电压
+            Vol_foc.Ud = PID_Calculate(&PID_Id, 0.0f, Curr_foc.Id);// - smo.Speed_pll * 0.0006 * Curr_foc.Iq; // 计算直轴电压
+            Vol_foc.Uq = PID_Calculate(&PID_Iq, tar_iq, Curr_foc.Iq);// + smo.Speed_pll * 0.0166f + smo.Speed_pll * 0.0006f * Curr_foc.Id; // 计算交轴电压
             Ipark(&Vol_foc, sine, cosine); // 逆Park变换
             Svpwm(&Vol_foc, V_all); // 调用SVPWM函数生成PWM信号
             SMO_Update(&smo, Curr_foc.Ialpha, Curr_foc.Ibeta, Vol_foc.Ualpha, Vol_foc.Ubeta, 0.02f); // 更新滑模观测器
-//            err_angle = angle - smo.Theta_pll; // 计算角度误差
-            err_angle = 0.0001f * (angle - smo.Theta_pll) + 0.9999f * err_angle;
+            Err_angle = angle - smo.Theta_pll; // 计算角度误差
+            Err_angle_encoder = angle_encoder - encoder_offset - smo.Theta_pll;
+            encoder_offset11 = 6.28f - normalize_angle(angle_encoder - encoder_offset);
+//            err_angle = 0.0001f * (angle - smo.Theta_pll) + 0.9999f * err_angle;
             //归一化角度误差到[-π, π]范围
-            if(err_angle > M_PI) {
-                err_angle -= 2 * M_PI;
-            } else if(err_angle < -M_PI) {
-                err_angle += 2 * M_PI;
-            }
-            if(State_Ts > 3 * startup_time){
+//            if(Err_angle > M_PI) {
+//                Err_angle -= 2 * M_PI;
+//            } else if(Err_angle < -M_PI) {
+//                Err_angle += 2 * M_PI;
+//            }
+//            if(Err_angle_encoder > M_PI) {
+//                Err_angle_encoder -= 2 * M_PI;
+//            } else if(Err_angle_encoder < -M_PI) {
+//                Err_angle_encoder += 2 * M_PI;
+//            }
+            if(State_Ts > 5 * startup_time){
                 State_Ts = 0;
+//                PID_Reset(&PID_Id); // 重置PID控制器
+//                PID_Reset(&PID_Iq); // 重置PID控制器
+//                smo.Theta_pll = angle;
+//                sine = sinf(smo.Theta_pll + err_angle);
+//                cosine = cosf(smo.Theta_pll + err_angle);
                 State = 2;
             }
             break;
@@ -341,18 +365,32 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq){
 //            sine = sinf(smo.Theta_pll + 2.45f);
 //            cosine = cosf(smo.Theta_pll + 2.45f);
 
-            sine = sinf(smo.Theta_pll);
-            cosine = cosf(smo.Theta_pll);
+            // 使用PID控制器计算所需电流
+//            iq_cmd = PID_Calculate(&PID_Speed, Target_speed, smo.Speed);
+//            angle += omega * 0.0004f; // 更新角度
+//            angle = normalize_angle(angle); // 归一化角度
+            sine = sinf(smo.Theta_pll + Vol_foc.Uq);
+            cosine = cosf(smo.Theta_pll + Vol_foc.Uq);
             
+            Err_angle_encoder = angle_encoder - encoder_offset - smo.Theta_pll;
+            if(Err_angle_encoder > M_PI) {
+                Err_angle_encoder -= 2 * M_PI;
+            } else if(Err_angle_encoder < -M_PI) {
+                Err_angle_encoder += 2 * M_PI;
+            }
+
             Clark(&Curr_foc, Curr_threephase.Ia, Curr_threephase.Ib);
             Park(&Curr_foc, sine, cosine);
             
-            Vol_foc.Ud = PID_Calculate(&PID_Id, 0.0f,   Curr_foc.Id);
-            Vol_foc.Uq = PID_Calculate(&PID_Iq, tar_iq, Curr_foc.Iq);
+//            Vol_foc.Ud = PID_Calculate(&PID_Id, 0.0f,   Curr_foc.Id);
+//            Vol_foc.Uq = PID_Calculate(&PID_Iq, tar_iq, Curr_foc.Iq);
             
+            Vol_foc.Ud = PID_Calculate(&PID_Id, 0.0f, Curr_foc.Id);// - smo.Speed_pll * 0.0006f * Curr_foc.Iq; // 计算直轴电压
+            Vol_foc.Uq = PID_Calculate(&PID_Iq, tar_iq, Curr_foc.Iq);// + smo.Speed_pll * 0.0166 + smo.Speed_pll * 0.0006f * Curr_foc.Id;// 计算交轴电压
             Ipark(&Vol_foc, sine, cosine);
             Svpwm(&Vol_foc, V_all);
             SMO_Update(&smo, Curr_foc.Ialpha, Curr_foc.Ibeta, Vol_foc.Ualpha, Vol_foc.Ubeta, 0.02f);
+
             break;
         }
         default:{
@@ -363,5 +401,142 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq){
     filter_data.Iq = Curr_foc.Iq * 0.0001f + filter_data.Iq * 0.9999f; // 更新Iq滤波器数据
 }
 
+
+unsigned char state_close = 0;
+/**
+ * @brief 有感FOC控制函数，使用外部传感器获得的电角度
+ * @param electric_angle_rad 电角度（弧度）
+ * @param target_id 目标d轴电流
+ * @param target_iq 目标q轴电流
+ */
+void Sensor_FOC_Control(float electric_angle_rad, float target_id, float target_iq) {
+    float sine, cosine;
+    static float encoder_offset = 0,encoder_offset_ts = 0,err_angle = 0;
+    
+    if(encoder_offset_ts++ <= 5000){
+        encoder_offset = Encoder_ElectricalAlign(electric_angle_rad);
+        if(encoder_offset_ts == 5000){
+            SMO_Init(&smo,SMO_paremeters[0],SMO_paremeters[1],SMO_paremeters[2]); // 初始化滑模观测器
+        }
+    }
+    else{
+    // 计算电角度的正弦和余弦值
+        encoder_offset11 = normalize_angle(electric_angle_rad - encoder_offset);
+
+        sine = sinf(encoder_offset11 + 1.57f);
+        cosine = cosf(encoder_offset11 + 1.57f);
+        if(encoder_offset_ts++ >= 100000){
+            state_close = 1;
+        }
+        if(state_close == 1){
+            sine = sinf(smo.Theta_pll);
+            cosine = cosf(smo.Theta_pll);
+        }else{
+            sine = sinf(electric_angle_rad - encoder_offset);
+            cosine = cosf(electric_angle_rad - encoder_offset);
+        }
+
+        err_angle = electric_angle_rad - encoder_offset - smo.Theta_pll; // 计算角度误差
+
+        if(err_angle > M_PI) {
+            err_angle -= 2 * M_PI;
+        } else if(err_angle < -M_PI) {
+            err_angle += 2 * M_PI;
+        }
+        // Clark变换：将三相电流转换为αβ坐标系
+        Clark(&Curr_foc, Curr_threephase.Ia, Curr_threephase.Ib);
+
+        // Park变换：将αβ坐标系电流转换为dq坐标系
+        // 注意：如果电机转向不对，可以尝试将sine和cosine交换位置
+        Park(&Curr_foc, sine, cosine);
+
+        // PID控制器计算dq轴电压
+        Vol_foc.Ud = 0;//PID_Calculate(&PID_Id, target_id, Curr_foc.Id);  // d轴电压控制
+        Vol_foc.Uq = PID_Calculate(&PID_Iq, target_iq, Curr_foc.Iq); // q轴电压控制
+
+        //    // 如果电机不转，可能需要给一个最小的电压值
+        //    if(Vol_foc.Uq > 0.0f && Vol_foc.Uq < 2.0f) Vol_foc.Uq = 2.0f;
+        //    if(Vol_foc.Ud < 0.0f && Vol_foc.Ud > -2.0f) Vol_foc.Ud = -2.0f;
+
+        // 电压限幅，防止过大的电压输出
+//        if(Vol_foc.Ud > 8.0f) Vol_foc.Ud = 8.0f;
+//        if(Vol_foc.Ud < -8.0f) Vol_foc.Ud = -8.0f;
+//        if(Vol_foc.Uq > 8.0f) Vol_foc.Uq = 8.0f;
+//        if(Vol_foc.Uq < -8.0f) Vol_foc.Uq = -8.0f;
+
+        // 逆Park变换：将dq坐标系电压转换为αβ坐标系
+        Ipark(&Vol_foc, sine, cosine);
+
+        // SVPWM输出：生成三相PWM信号
+        Svpwm(&Vol_foc, V_all);
+        SMO_Update(&smo, Curr_foc.Ialpha, Curr_foc.Ibeta, Vol_foc.Ualpha, Vol_foc.Ubeta, 0.02f);
+
+
+
+        // 更新滤波器数据
+        filter_data.Id = Curr_foc.Id * 0.0001f + filter_data.Id * 0.9999f; // 更新Id滤波器数据
+        filter_data.Iq = Curr_foc.Iq * 0.0001f + filter_data.Iq * 0.9999f; // 更新Iq滤波器数据
+    }
+}
+
+/**
+ * @brief 简化的有感FOC测试函数，用于排查问题
+ * @param electric_angle_rad 电角度（弧度）
+ * @param target_iq 目标q轴电流
+ */
+void Simple_Sensor_FOC_Test(float electric_angle_rad, float target_iq) {
+    float sine, cosine;
+    static float encoder_offset = 0,encoder_offset_ts = 0;
+    
+    if(encoder_offset_ts++ <= 5000){
+        encoder_offset = Encoder_ElectricalAlign(electric_angle_rad);
+        if(encoder_offset_ts == 5000){
+           SMO_Init(&smo,SMO_paremeters[0],SMO_paremeters[1],SMO_paremeters[2]); // 初始化滑模观测器
+       }
+    }
+    else{
+    // 计算电角度的正弦和余弦值
+       encoder_offset11 = normalize_angle(electric_angle_rad - encoder_offset);
+       sine = sinf(encoder_offset11);
+       cosine = cosf(encoder_offset11);
+
+
+       // 简化控制：直接设置电压而不使用电流反馈
+       Vol_foc.Ud = -3;              // d轴电压为0
+       Vol_foc.Uq = 1.0f;  // q轴电压正比于目标电流
+    
+       //    Vol_foc.Ud = 3;              // d轴电压为0
+       //    Vol_foc.Uq = 6;  // q轴电压正比于目标电流
+
+       // 限制电压幅值
+       if(Vol_foc.Uq > 6.0f) Vol_foc.Uq = 6.0f;
+       if(Vol_foc.Uq < -6.0f) Vol_foc.Uq = -6.0f;
+       Clark(&Curr_foc, Curr_threephase.Ia, Curr_threephase.Ib); // Clarke变换
+       Park(&Curr_foc, sine, cosine); // Park变换 计算直轴和交轴电流
+       // 逆Park变换
+       Ipark(&Vol_foc, sine, cosine);
+
+       // SVPWM输出
+       Svpwm(&Vol_foc, V_all);
+       SMO_Update(&smo, Curr_foc.Ialpha, Curr_foc.Ibeta, Vol_foc.Ualpha, Vol_foc.Ubeta, 0.02f);
+
+       filter_data.Id = Curr_foc.Id * 0.0001f + filter_data.Id * 0.9999f; // 更新Id滤波器数据
+       filter_data.Iq = Curr_foc.Iq * 0.0001f + filter_data.Iq * 0.9999f; // 更新Iq滤波器数据
+    }
+}
+
+
+
+float Encoder_ElectricalAlign(float electric_angle_rad) {
+    // 1. 让转子静止在d轴
+    Vol_foc.Ud = 3.0f; // 适当电压，保证转子吸合
+    Vol_foc.Uq = 0.0f;
+    float sin_angle = 0.0f;
+    float cos_angle = 1.0f;
+    Ipark(&Vol_foc, sin_angle, cos_angle);
+    Svpwm(&Vol_foc, V_all);
+    // 2. 记录此时编码器计数为offset
+    return electric_angle_rad;
+}
 
 

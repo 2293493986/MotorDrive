@@ -7,8 +7,16 @@
 
 #include "timer.h"
 #include "foc.h"
+#include "uart.h"
 
-unsigned int ms_1000 = 0;
+
+
+// 全局变量
+float g_electric_angle_rad = 0.0f;  // 存储电角度（弧度）
+
+
+
+unsigned int ms_1000 = 0, ms_1 = 0;
 
 void Time0_Init(int Freq, int Period){
     EALLOW;  //关闭写保护
@@ -44,14 +52,25 @@ void Time0_Init(int Freq, int Period){
     EDIS;   //开启写保护
 }
 
-float target_iq = 0.35f;
+//float target_iq = 0.35f;
+float target_iq = 0.06f;  // 增加目标电流，确保有足够的转矩
+float target_id = 0;
+//static Uint16 control_mode = 0;  // 0=开环, 1=有感FOC
+//static float angle_offset = 0.0f;  // 角度偏移补偿
+
 interrupt void TIM0_IRQ(void)
 {
     EALLOW;
     ms_1000++;
-//    VF_OpenLoop_Control();
-    IF_OpenLoop_Control(1000, 5,target_iq);
-//    IF_OpenLoop_Control(200, 5,0.1f);
+    ms_1++;
+//    g_electric_angle_rad = UartA_GetAngle();
+
+//   Simple_Sensor_FOC_Test(-g_electric_angle_rad, target_iq);
+    // 使用完整有感FOC控制
+//    Sensor_FOC_Control(-g_electric_angle_rad, target_id, target_iq);
+
+    IF_OpenLoop_Control(200, 5, target_iq,g_electric_angle_rad);
+
     CpuTimer0Regs.TCR.bit.TIF = 1;//清除外设及中断标志位
     PieCtrlRegs.PIEACK.bit.ACK1 = 1;//清除PIE级中断应答
     EDIS;
