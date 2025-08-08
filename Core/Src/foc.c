@@ -16,6 +16,7 @@ struct PID_Controller PID_Speed;
 
 struct filter filter_data = {0.0f, 0.0f}; // 滤波器数据结构体
 
+float TA = 0,TB = 0,TC = 0;
 
 void PID_PreLoad(struct PID_Controller *pid, float *paremeters) {
     PID_Init(pid,
@@ -77,7 +78,6 @@ void Ipark(struct Vol *vol, float sin_angle, float cos_angle){
 void Svpwm(struct Vol *vol, float U_all) {
     const float SQRT3 = 1.732f;            // √3
     const float SQRT3_DIV2 = 0.866f;       // √3/2
-    const float SCALE = 2250.0f;
 
     // 使用简化的扇区判断
     unsigned char A = (vol->Ubeta >= 0);
@@ -152,10 +152,13 @@ void Svpwm(struct Vol *vol, float U_all) {
         }
     }
 
-    // 一次性设置PWM寄存器
-    EPwm1Regs.CMPA.half.CMPA = EPwm1Regs.CMPB = SCALE * Ta;
-    EPwm2Regs.CMPA.half.CMPA = EPwm2Regs.CMPB = SCALE * Tb;
-    EPwm3Regs.CMPA.half.CMPA = EPwm3Regs.CMPB = SCALE * Tc;
+    PWM_setDutyCycle(1, Ta, Ta);
+    PWM_setDutyCycle(2, Tb *0.98f, Tb*0.98f);
+    PWM_setDutyCycle(3, Tc, Tc);
+
+    TA = Ta;
+    TB = Tb;
+    TC = Tc;
 }
 
 
@@ -207,7 +210,7 @@ void OpenLoopVF_Startup(struct Vol *vol,float *angle){
     // 计算输出电压和角度增量
     vol->Uq = V_per_Hz * electrical_freq;    // 交轴电压
     vol->Ud = 0.0f;                          // 直轴电压置零
-    float delta_theta = PI2 * electrical_freq * 0.0002f; // 假设采样时间为1ms
+    float delta_theta = PI2 * electrical_freq * 0.0004f; // 假设采样时间为1ms
 
     // 更新角度并归一化
     angle_open_loop = angle_open_loop + delta_theta;
@@ -278,7 +281,7 @@ float calculateRequiredIq(float target_speed, float startup_time) {
 
 
            
-float Target_speed = 1000.0f; // rpm
+float Target_speed = 1200.0f; // rpm
 float iq_cmd = 0;
 float Err_angle = 0.0f,Err_angle_encoder = 0;
 float encoder_offset11 = 0;
@@ -329,11 +332,11 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq,floa
             cosine = cosf(angle); // 计算余弦值
             Clark(&Curr_foc, Curr_threephase.Ia, Curr_threephase.Ib); // Clarke变换
             Park(&Curr_foc, sine, cosine); // Park变换 计算直轴和交轴电流
-            Vol_foc.Ud = PID_Calculate(&PID_Id, 0.0f, Curr_foc.Id);// - smo.Speed_pll * 0.0006 * Curr_foc.Iq; // 计算直轴电压
-            Vol_foc.Uq = PID_Calculate(&PID_Iq, tar_iq, Curr_foc.Iq);// + smo.Speed_pll * 0.0166f + smo.Speed_pll * 0.0006f * Curr_foc.Id; // 计算交轴电压
+            Vol_foc.Ud = 0;//PID_Calculate(&PID_Id, 0.0f, Curr_foc.Id);// - smo.Speed_pll * 0.0006 * Curr_foc.Iq; // 计算直轴电压
+            Vol_foc.Uq = 2;//PID_Calculate(&PID_Iq, tar_iq, Curr_foc.Iq);// + smo.Speed_pll * 0.0166f + smo.Speed_pll * 0.0006f * Curr_foc.Id; // 计算交轴电压
             Ipark(&Vol_foc, sine, cosine); // 逆Park变换
             Svpwm(&Vol_foc, V_all); // 调用SVPWM函数生成PWM信号
-            SMO_Update(&smo, Curr_foc.Ialpha, Curr_foc.Ibeta, Vol_foc.Ualpha, Vol_foc.Ubeta, 0.02f); // 更新滑模观测器
+            SMO_Update(&smo, Curr_foc.Ialpha, Curr_foc.Ibeta, Vol_foc.Ualpha, Vol_foc.Ubeta, 0.001f); // 更新滑模观测器
             Err_angle = angle - smo.Theta_pll; // 计算角度误差
             Err_angle_encoder = angle_encoder - encoder_offset - smo.Theta_pll;
             encoder_offset11 = 6.28f - normalize_angle(angle_encoder - encoder_offset);
@@ -349,15 +352,15 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq,floa
 //            } else if(Err_angle_encoder < -M_PI) {
 //                Err_angle_encoder += 2 * M_PI;
 //            }
-            if(State_Ts > 5 * startup_time){
-                State_Ts = 0;
-//                PID_Reset(&PID_Id); // 重置PID控制器
-//                PID_Reset(&PID_Iq); // 重置PID控制器
-//                smo.Theta_pll = angle;
-//                sine = sinf(smo.Theta_pll + err_angle);
-//                cosine = cosf(smo.Theta_pll + err_angle);
-                State = 2;
-            }
+//            if(State_Ts > 5 * startup_time){
+//                State_Ts = 0;
+////                PID_Reset(&PID_Id); // 重置PID控制器
+////                PID_Reset(&PID_Iq); // 重置PID控制器
+////                smo.Theta_pll = angle;
+////                sine = sinf(smo.Theta_pll + err_angle);
+////                cosine = cosf(smo.Theta_pll + err_angle);
+//                State = 2;
+//            }
             break;
         }
         case 2:{
@@ -369,8 +372,8 @@ void IF_OpenLoop_Control(float target_speed,float startup_time,float tar_iq,floa
 //            iq_cmd = PID_Calculate(&PID_Speed, Target_speed, smo.Speed);
 //            angle += omega * 0.0004f; // 更新角度
 //            angle = normalize_angle(angle); // 归一化角度
-            sine = sinf(smo.Theta_pll + Vol_foc.Uq);
-            cosine = cosf(smo.Theta_pll + Vol_foc.Uq);
+            sine = sinf(smo.Theta_pll);
+            cosine = cosf(smo.Theta_pll);
             
             Err_angle_encoder = angle_encoder - encoder_offset - smo.Theta_pll;
             if(Err_angle_encoder > M_PI) {
